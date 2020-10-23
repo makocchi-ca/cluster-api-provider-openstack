@@ -48,14 +48,14 @@ RELEASE_NOTES := $(TOOLS_DIR)/$(RELEASE_NOTES_BIN)
 GINKGO := $(abspath $(TOOLS_BIN_DIR)/ginkgo)
 
 # Define Docker related variables. Releases should modify and double check these vars.
-REGISTRY ?= gcr.io/k8s-staging-capi-openstack
-STAGING_REGISTRY := gcr.io/k8s-staging-capi-openstack
-PROD_REGISTRY := us.gcr.io/k8s-artifacts-prod/capi-openstack
-IMAGE_NAME ?= capi-openstack-controller
+REGISTRY ?= asia.gcr.io/cyberagent-001
+STAGING_REGISTRY := asia.gcr.io/cyberagent-001/capi-openstack
+PROD_REGISTRY := asia.gcr.io/cyberagent-001/capi-openstack
+IMAGE_NAME ?= capi-ake-controller
 CONTROLLER_IMG ?= $(REGISTRY)/$(IMAGE_NAME)
 TAG ?= dev
 ARCH ?= amd64
-ALL_ARCH = amd64 arm arm64 ppc64le s390x
+ALL_ARCH = amd64
 CAPI_VERSION = 0.3.10
 
 # Allow overriding manifest generation destination directory
