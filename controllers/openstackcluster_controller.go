@@ -31,7 +31,6 @@ import (
 	"k8s.io/client-go/tools/record"
 	infrav1 "sigs.k8s.io/cluster-api-provider-openstack/api/v1alpha3"
 	"sigs.k8s.io/cluster-api-provider-openstack/pkg/cloud/services/compute"
-	"sigs.k8s.io/cluster-api-provider-openstack/pkg/cloud/services/loadbalancer"
 	"sigs.k8s.io/cluster-api-provider-openstack/pkg/cloud/services/networking"
 	"sigs.k8s.io/cluster-api-provider-openstack/pkg/cloud/services/provider"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
@@ -123,44 +122,6 @@ func (r *OpenStackClusterReconciler) reconcileDelete(ctx context.Context, log lo
 		return reconcile.Result{}, err
 	}
 
-	if openStackCluster.Spec.Bastion != nil && openStackCluster.Spec.Bastion.Enabled {
-		computeService, err := compute.NewService(osProviderClient, clientOpts, log)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-		if bastion := openStackCluster.Status.Bastion; bastion != nil {
-
-			if err = computeService.DeleteBastion(bastion.ID); err != nil {
-				return reconcile.Result{}, errors.Errorf("failed to delete bastion: %v", err)
-			}
-			r.Recorder.Eventf(openStackCluster, corev1.EventTypeNormal, "SuccessfulDeleteServer", "Deleted server %s with id %s", bastion.Name, bastion.ID)
-		}
-
-		if bastionSecGroup := openStackCluster.Status.BastionSecurityGroup; bastionSecGroup != nil {
-			log.Info("Deleting bastion security group", "name", bastionSecGroup.Name)
-			if err = networkingService.DeleteSecurityGroups(bastionSecGroup); err != nil {
-				return reconcile.Result{}, errors.Errorf("failed to delete security group: %v", err)
-			}
-			r.Recorder.Eventf(openStackCluster, corev1.EventTypeNormal, "SuccessfulDeleteSecurityGroup", "Deleted security group %s with id %s", bastionSecGroup.Name, bastionSecGroup.ID)
-
-		}
-	}
-
-	loadBalancerService, err := loadbalancer.NewService(osProviderClient, clientOpts, log, openStackCluster.Spec.UseOctavia)
-	if err != nil {
-		return reconcile.Result{}, err
-	}
-
-	if openStackCluster.Spec.ManagedAPIServerLoadBalancer {
-		if apiLb := openStackCluster.Status.Network.APIServerLoadBalancer; apiLb != nil {
-			if err = loadBalancerService.DeleteLoadBalancer(apiLb.Name, openStackCluster); err != nil {
-				return reconcile.Result{}, errors.Errorf("failed to delete load balancer: %v", err)
-			}
-			r.Recorder.Eventf(openStackCluster, corev1.EventTypeNormal, "SuccessfulDeleteLoadBalancer", "Deleted load balancer %s with id %s", apiLb.Name, apiLb.ID)
-
-		}
-	}
-
 	// Delete other things
 	if workerSecGroup := openStackCluster.Status.WorkerSecurityGroup; workerSecGroup != nil {
 		log.Info("Deleting worker security group", "name", workerSecGroup.Name)
@@ -176,25 +137,6 @@ func (r *OpenStackClusterReconciler) reconcileDelete(ctx context.Context, log lo
 			return reconcile.Result{}, errors.Errorf("failed to delete security group: %v", err)
 		}
 		r.Recorder.Eventf(openStackCluster, corev1.EventTypeNormal, "SuccessfulDeleteSecurityGroup", "Deleted security group %s with id %s", controlPlaneSecGroup.Name, controlPlaneSecGroup.ID)
-	}
-
-	if router := openStackCluster.Status.Network.Router; router != nil {
-		log.Info("Deleting router", "name", router.Name)
-		if err = networkingService.DeleteRouter(openStackCluster.Status.Network); err != nil {
-			return ctrl.Result{}, errors.Errorf("failed to delete router: %v", err)
-		}
-		r.Recorder.Eventf(openStackCluster, corev1.EventTypeNormal, "SuccessfulDeleteRouter", "Deleted router %s with id %s", router.Name, router.ID)
-		log.Info("OpenStack router deleted successfully")
-	}
-
-	// if NodeCIDR was not set, no network was created.
-	if network := openStackCluster.Status.Network; network != nil && openStackCluster.Spec.NodeCIDR != "" {
-		log.Info("Deleting network", "name", network.Name)
-		if err = networkingService.DeleteNetwork(network); err != nil {
-			return ctrl.Result{}, errors.Errorf("failed to delete network: %v", err)
-		}
-		r.Recorder.Eventf(openStackCluster, corev1.EventTypeNormal, "SuccessfulDeleteNetwork", "Deleted network %s with id %s", network.Name, network.ID)
-		log.Info("OpenStack network deleted successfully")
 	}
 
 	log.Info("OpenStack cluster deleted successfully")
@@ -242,13 +184,6 @@ func (r *OpenStackClusterReconciler) reconcileNormal(ctx context.Context, log lo
 		return reconcile.Result{}, err
 	}
 
-	if openStackCluster.Spec.Bastion != nil && openStackCluster.Spec.Bastion.Enabled {
-		err = r.reconcileBastion(log, osProviderClient, clientOpts, cluster, openStackCluster)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-	}
-
 	availabilityZones, err := computeService.GetAvailabilityZones()
 	if err != nil {
 		return ctrl.Result{}, err
@@ -284,45 +219,6 @@ func (r *OpenStackClusterReconciler) reconcileNormal(ctx context.Context, log lo
 	return ctrl.Result{}, nil
 }
 
-func (r *OpenStackClusterReconciler) reconcileBastion(log logr.Logger, osProviderClient *gophercloud.ProviderClient, clientOpts *clientconfig.ClientOpts, cluster *clusterv1.Cluster, openStackCluster *infrav1.OpenStackCluster) error {
-
-	log.Info("Reconciling Bastion")
-
-	computeService, err := compute.NewService(osProviderClient, clientOpts, log)
-	if err != nil {
-		return err
-	}
-
-	instance, err := computeService.InstanceExists(fmt.Sprintf("%s-bastion", cluster.Name))
-	if err != nil {
-		return err
-	}
-	if instance != nil {
-		return nil
-	}
-
-	instance, err = computeService.CreateBastion(cluster.Name, openStackCluster)
-	if err != nil {
-		return errors.Errorf("failed to reconcile bastion: %v", err)
-	}
-
-	networkingService, err := networking.NewService(osProviderClient, clientOpts, log)
-	if err != nil {
-		return err
-	}
-	fp, err := networkingService.GetOrCreateFloatingIP(openStackCluster, openStackCluster.Spec.Bastion.FloatingIP)
-	if err != nil {
-		return errors.Errorf("failed to get or create floating IP for bastion: %v", err)
-	}
-	err = computeService.AssociateFloatingIP(instance.ID, fp.FloatingIP)
-	if err != nil {
-		return errors.Errorf("failed to associate floating IP with bastion: %v", err)
-	}
-	instance.FloatingIP = fp.FloatingIP
-	openStackCluster.Status.Bastion = instance
-	return nil
-}
-
 func (r *OpenStackClusterReconciler) reconcileNetworkComponents(log logr.Logger, osProviderClient *gophercloud.ProviderClient, clientOpts *clientconfig.ClientOpts, cluster *clusterv1.Cluster, openStackCluster *infrav1.OpenStackCluster) error {
 	clusterName := fmt.Sprintf("%s-%s", cluster.Namespace, cluster.Name)
 
@@ -331,101 +227,70 @@ func (r *OpenStackClusterReconciler) reconcileNetworkComponents(log logr.Logger,
 		return err
 	}
 
-	loadBalancerService, err := loadbalancer.NewService(osProviderClient, clientOpts, log, openStackCluster.Spec.UseOctavia)
+	computeService, err := compute.NewService(osProviderClient, clientOpts, log)
 	if err != nil {
 		return err
 	}
 
 	log.Info("Reconciling network components")
 
-	err = networkingService.ReconcileExternalNetwork(openStackCluster)
-	if err != nil {
-		return errors.Errorf("failed to reconcile external network: %v", err)
+	if openStackCluster.Spec.NodeCIDR != "" {
+		log.Info("ignore NodeCidr because it will be automatically detected by controller")
 	}
 
-	if openStackCluster.Spec.NodeCIDR == "" {
-		log.V(4).Info("No need to reconcile network, searching network and subnet instead")
+	log.V(4).Info("No need to reconcile network, searching network and subnet instead")
 
-		netOpts := networks.ListOpts(openStackCluster.Spec.Network)
-		networkList, err := networkingService.GetNetworksByFilter(&netOpts)
-		if err != nil {
-			return errors.Errorf("failed to find network: %v", err)
-		}
-		if len(networkList) == 0 {
-			return errors.Errorf("failed to find any network: %v", err)
-		}
-		if len(networkList) > 1 {
-			return errors.Errorf("failed to find only one network (result: %v): %v", networkList, err)
-		}
-		openStackCluster.Status.Network = &infrav1.Network{
-			ID:   networkList[0].ID,
-			Name: networkList[0].Name,
-			Tags: networkList[0].Tags,
-		}
+	netOpts := networks.ListOpts(openStackCluster.Spec.Network)
+	networkList, err := networkingService.GetNetworksByFilter(&netOpts)
+	if err != nil {
+		return errors.Errorf("failed to find network: %v", err)
+	}
+	if len(networkList) == 0 {
+		return errors.Errorf("failed to find any network: %v", err)
+	}
+	if len(networkList) > 1 {
+		return errors.Errorf("failed to find only one network (result: %v): %v", networkList, err)
+	}
+	openStackCluster.Status.Network = &infrav1.Network{
+		ID:   networkList[0].ID,
+		Name: networkList[0].Name,
+		Tags: networkList[0].Tags,
+	}
 
-		subnetOpts := subnets.ListOpts(openStackCluster.Spec.Subnet)
-		subnetOpts.NetworkID = networkList[0].ID
-		subnetList, err := networkingService.GetSubnetsByFilter(&subnetOpts)
-		if err != nil || len(subnetList) == 0 {
-			return errors.Errorf("failed to find subnet: %v", err)
-		}
-		if len(subnetList) > 1 {
-			return errors.Errorf("failed to find only one subnet (result: %v): %v", subnetList, err)
-		}
-		openStackCluster.Status.Network.Subnet = &infrav1.Subnet{
-			ID:   subnetList[0].ID,
-			Name: subnetList[0].Name,
-			CIDR: subnetList[0].CIDR,
-			Tags: subnetList[0].Tags,
-		}
-	} else {
-		err := networkingService.ReconcileNetwork(clusterName, openStackCluster)
-		if err != nil {
-			return errors.Errorf("failed to reconcile network: %v", err)
-		}
-		err = networkingService.ReconcileSubnet(clusterName, openStackCluster)
-		if err != nil {
-			return errors.Errorf("failed to reconcile subnets: %v", err)
-		}
-		err = networkingService.ReconcileRouter(clusterName, openStackCluster)
-		if err != nil {
-			return errors.Errorf("failed to reconcile router: %v", err)
-		}
+	subnetOpts := subnets.ListOpts(openStackCluster.Spec.Subnet)
+	subnetOpts.NetworkID = networkList[0].ID
+	subnetList, err := networkingService.GetSubnetsByFilter(&subnetOpts)
+	if err != nil || len(subnetList) == 0 {
+		return errors.Errorf("failed to find subnet: %v", err)
+	}
+	if len(subnetList) > 1 {
+		return errors.Errorf("failed to find only one subnet (result: %v): %v", subnetList, err)
+	}
+	openStackCluster.Status.Network.Subnet = &infrav1.Subnet{
+		ID:   subnetList[0].ID,
+		Name: subnetList[0].Name,
+		CIDR: subnetList[0].CIDR,
+		Tags: subnetList[0].Tags,
 	}
 
 	if openStackCluster.Spec.ControlPlaneEndpoint.IsZero() {
-		var controlPlaneEndpointHost string
 		var port int32
-		if openStackCluster.Spec.ManagedAPIServerLoadBalancer {
-			controlPlaneEndpointHost = openStackCluster.Spec.APIServerLoadBalancerFloatingIP
-			if openStackCluster.Spec.APIServerLoadBalancerPort == 0 {
-				port = 6443
-			} else {
-				port = int32(openStackCluster.Spec.APIServerLoadBalancerPort)
-			}
+
+		if openStackCluster.Spec.ControlPlaneEndpoint.Port == 0 {
+			port = 6443
 		} else {
-			controlPlaneEndpointHost = openStackCluster.Spec.ControlPlaneEndpoint.Host
-			if openStackCluster.Spec.ControlPlaneEndpoint.Port == 0 {
-				port = 6443
-			} else {
-				port = openStackCluster.Spec.ControlPlaneEndpoint.Port
-			}
+			port = openStackCluster.Spec.ControlPlaneEndpoint.Port
 		}
-		fp, err := networkingService.GetOrCreateFloatingIP(openStackCluster, controlPlaneEndpointHost)
+
+		instance, err := computeService.InstanceExists(openStackCluster.Spec.ControlPlaneEndpoint.Host)
 		if err != nil {
-			return errors.Errorf("Floating IP cannot be got or created: %v", err)
+			return errors.Errorf("failed to get host ip [%s] [%v]", openStackCluster.Spec.ControlPlaneEndpoint.Host, err)
 		}
+
 		// Set APIEndpoints so the Cluster API Cluster Controller can pull them
 		openStackCluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
-			Host: fp.FloatingIP,
+			Host: instance.IP,
 			Port: port,
-		}
-	}
-
-	if openStackCluster.Spec.ManagedAPIServerLoadBalancer {
-		err = loadBalancerService.ReconcileLoadBalancer(clusterName, openStackCluster)
-		if err != nil {
-			return errors.Errorf("failed to reconcile load balancer: %v", err)
 		}
 	}
 
