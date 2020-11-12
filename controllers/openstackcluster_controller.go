@@ -289,26 +289,20 @@ func (r *OpenStackClusterReconciler) reconcileNetworkComponents(log logr.Logger,
 		}
 
 		controlPlane := util.GetControlPlaneMachinesFromList(machines)
-		if len(controlPlane) < 1 {
-			return errors.Errorf("no machines found from cluster")
+		if len(controlPlane) > 0 {
+			instanceName := controlPlane[0].Spec.InfrastructureRef.Name
+			instance, err := computeService.InstanceExists(instanceName)
+			if err != nil {
+				return errors.Errorf("failed to get host ip [%s] [%v]", openStackCluster.Spec.ControlPlaneEndpoint.Host, err)
+			}
+			// Set APIEndpoints so the Cluster API Cluster Controller can pull them
+			openStackCluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
+				Host: instance.IP,
+				Port: port,
+			}
+
 		}
 
-		// TODO: get ip from the first instance
-		instanceName := controlPlane[0].Spec.InfrastructureRef.Name
-		if instanceName == "" {
-			return errors.Errorf("failed to get instance name from Machine")
-		}
-
-		instance, err := computeService.InstanceExists(instanceName)
-		if err != nil {
-			return errors.Errorf("failed to get host ip [%s] [%v]", openStackCluster.Spec.ControlPlaneEndpoint.Host, err)
-		}
-
-		// Set APIEndpoints so the Cluster API Cluster Controller can pull them
-		openStackCluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
-			Host: instance.IP,
-			Port: port,
-		}
 	}
 
 	err = networkingService.ReconcileSecurityGroups(clusterName, openStackCluster)
