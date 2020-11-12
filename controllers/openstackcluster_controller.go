@@ -282,7 +282,24 @@ func (r *OpenStackClusterReconciler) reconcileNetworkComponents(log logr.Logger,
 			port = openStackCluster.Spec.ControlPlaneEndpoint.Port
 		}
 
-		instance, err := computeService.InstanceExists(openStackCluster.Spec.ControlPlaneEndpoint.Host)
+		// Fetch the OpenStackMachine instance.
+		machines, err := util.GetMachinesForCluster(context.TODO(), r.Client, cluster)
+		if err != nil {
+			return errors.Errorf("failed to get machines from cluster")
+		}
+
+		controlPlane := util.GetControlPlaneMachinesFromList(machines)
+		if len(controlPlane) < 1 {
+			return errors.Errorf("no machines found from cluster")
+		}
+
+		// TODO: get ip from the first instance
+		instanceName := controlPlane[0].Spec.InfrastructureRef.Name
+		if instanceName == "" {
+			return errors.Errorf("failed to get instance name from Machine")
+		}
+
+		instance, err := computeService.InstanceExists(instanceName)
 		if err != nil {
 			return errors.Errorf("failed to get host ip [%s] [%v]", openStackCluster.Spec.ControlPlaneEndpoint.Host, err)
 		}
